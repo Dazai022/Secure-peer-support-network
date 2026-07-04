@@ -12,27 +12,18 @@ interface ChatProps {
 }
 
 /**
- * Derive deterministic room AES-GCM encryption key from roomId
- * Ensured both Seeker and Volunteer in the same roomId get the exact same E2E key.
+ * Derive room AES-GCM encryption key from roomId using SHA-256 hash
+ * Guaranteed 100% identical across all browsers & tabs for the same roomId.
  */
 async function getRoomEncryptionKey(roomId: string): Promise<CryptoKey> {
   const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(`secure-peer-support-secret-${roomId}`),
-    'PBKDF2',
-    false,
-    ['deriveKey']
-  );
+  const rawBytes = enc.encode(`secure-peer-support-secret-v1-${roomId}`);
+  const hash = await crypto.subtle.digest('SHA-256', rawBytes);
+  const keyBytes = hash.slice(0, 16); // 128-bit key
 
-  return await crypto.subtle.deriveKey(
-    {
-      name: 'PBKDF2',
-      salt: enc.encode(`salt-peer-support-${roomId}`),
-      iterations: 10000,
-      hash: 'SHA-256',
-    },
-    keyMaterial,
+  return await crypto.subtle.importKey(
+    'raw',
+    keyBytes,
     { name: 'AES-GCM', length: 128 },
     true,
     ['encrypt', 'decrypt']
@@ -165,7 +156,7 @@ export default function Chat({ roomId, senderId, senderRole, token }: ChatProps)
       return await decryptMessage(message.ciphertext, message.iv, encryptionKey);
     } catch (error) {
       console.error('Decryption error:', error);
-      return '[Encrypted Message]';
+      return '[Decryption Error]';
     }
   };
 
