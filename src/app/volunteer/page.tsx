@@ -5,14 +5,18 @@ import Link from 'next/link';
 import Chat from '@/components/Chat';
 import CredentialCard from '@/components/CredentialCard';
 import ProofStatus from '@/components/ProofStatus';
-import { VolunteerCredential } from '@/lib/types';
+import { VolunteerCredential, ChatRoom } from '@/lib/types';
 import { getCredentialsFromStorage, saveCredentialToStorage } from '@/lib/storage/indexeddb';
 import { generateProof } from '@/lib/zk/prover';
 
 export default function VolunteerPage() {
   const [credentials, setCredentials] = useState<VolunteerCredential[]>([]);
   const [selectedCred, setSelectedCred] = useState<VolunteerCredential | null>(null);
-  const [roomIdInput, setRoomIdInput] = useState('');
+  
+  const [waitingRooms, setWaitingRooms] = useState<ChatRoom[]>([]);
+  const [loadingRooms, setLoadingRooms] = useState(false);
+  const [selectedRoomId, setSelectedRoomId] = useState<string>('');
+
   const [chatToken, setChatToken] = useState<string | null>(null);
   const [joinedRoomId, setJoinedRoomId] = useState<string | null>(null);
   const [volunteerId, setVolunteerId] = useState<string | null>(null);
@@ -30,7 +34,31 @@ export default function VolunteerPage() {
     });
   }, []);
 
-  // Demo helper: Load a pre-generated demo credential if none exist
+  // Fetch waiting support requests feed
+  const fetchWaitingRooms = async () => {
+    setLoadingRooms(true);
+    try {
+      const res = await fetch('/api/chat/room?filter=waiting');
+      if (res.ok) {
+        const data = await res.json();
+        setWaitingRooms(data.rooms || []);
+        if (data.rooms && data.rooms.length > 0 && !selectedRoomId) {
+          setSelectedRoomId(data.rooms[0].id);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch waiting rooms:', err);
+    } finally {
+      setLoadingRooms(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchWaitingRooms();
+    const interval = setInterval(fetchWaitingRooms, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
   const handleLoadDemoCred = async () => {
     try {
       const res = await fetch('/api/admin/issue-credential', {
@@ -59,14 +87,16 @@ export default function VolunteerPage() {
     }
   };
 
-  const handleJoinChat = async () => {
+  const handleJoinChat = async (targetRoomId?: string) => {
+    const roomIdToJoin = targetRoomId || selectedRoomId;
+
     if (!selectedCred) {
       alert('Please select or obtain a verifiable credential first');
       return;
     }
 
-    if (!roomIdInput.trim()) {
-      alert('Please enter a valid Chat Room ID');
+    if (!roomIdToJoin.trim()) {
+      alert('Please select a waiting support request to join');
       return;
     }
 
@@ -80,7 +110,7 @@ export default function VolunteerPage() {
 
       // Step 2: ZK Proof Generation
       setProofStatus('generating');
-      const proof = await generateProof(selectedCred, nonce, 'age_verified', roomIdInput.trim());
+      const proof = await generateProof(selectedCred, nonce, 'age_verified', roomIdToJoin.trim());
 
       // Step 3: Verification Server-Side
       setProofStatus('verifying');
@@ -102,7 +132,7 @@ export default function VolunteerPage() {
       setTimeout(() => {
         setChatToken(token);
         setVolunteerId(volId);
-        setJoinedRoomId(roomIdInput.trim());
+        setJoinedRoomId(roomIdToJoin.trim());
       }, 800);
     } catch (err: any) {
       console.error(err);
@@ -135,7 +165,7 @@ export default function VolunteerPage() {
             token={chatToken}
           />
         ) : (
-          <div className="grid md:grid-cols-2 gap-8 max-w-4xl w-full">
+          <div className="grid md:grid-cols-2 gap-8 max-w-5xl w-full">
             {/* Left Column: Credentials */}
             <div className="bg-white rounded-2xl shadow-md p-6 border border-slate-200 flex flex-col justify-between">
               <div>
@@ -181,36 +211,63 @@ export default function VolunteerPage() {
               )}
             </div>
 
-            {/* Right Column: Join Room & Proof Pipeline */}
+            {/* Right Column: Live Waiting Support Requests Feed */}
             <div className="bg-white rounded-2xl shadow-md p-6 border border-slate-200 flex flex-col justify-between space-y-6">
               <div>
-                <h2 className="text-lg font-bold text-slate-900 mb-1">Join Support Room</h2>
-                <p className="text-xs text-slate-500 mb-4">
-                  Prove qualification via ZK Proof to join chat without revealing your identity.
-                </p>
-
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Chat Room ID
-                    </label>
-                    <input
-                      type="text"
-                      value={roomIdInput}
-                      onChange={(e) => setRoomIdInput(e.target.value)}
-                      placeholder="e.g. demo-room-123 or paste room ID"
-                      className="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    />
-                  </div>
-
+                <div className="flex justify-between items-center mb-1">
+                  <h2 className="text-lg font-bold text-slate-900">Active Support Requests</h2>
                   <button
-                    onClick={handleJoinChat}
-                    disabled={proofStatus === 'challenging' || proofStatus === 'generating' || proofStatus === 'verifying'}
-                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-xl text-sm transition-all shadow-md hover:shadow-emerald-500/25 disabled:opacity-50"
+                    onClick={fetchWaitingRooms}
+                    className="text-xs text-emerald-600 hover:text-emerald-700 font-medium flex items-center gap-1"
                   >
-                    Generate ZK Proof & Join Chat
+                    🔄 Refresh Feed
                   </button>
                 </div>
+                <p className="text-xs text-slate-500 mb-4">
+                  Select a waiting anonymous support seeker to join using ZK Proof.
+                </p>
+
+                {waitingRooms.length === 0 ? (
+                  <div className="p-6 bg-slate-50 border border-slate-200 rounded-xl text-center text-xs text-slate-500">
+                    No seekers currently waiting. Create a seeker session in another tab at <Link href="/seeker" target="_blank" className="text-blue-600 underline">/seeker</Link> to see it appear live here!
+                  </div>
+                ) : (
+                  <div className="space-y-3 max-h-[220px] overflow-y-auto pr-1">
+                    {waitingRooms.map((room, idx) => (
+                      <div
+                        key={room.id}
+                        onClick={() => setSelectedRoomId(room.id)}
+                        className={`p-3.5 border rounded-xl flex justify-between items-center cursor-pointer transition-all ${
+                          selectedRoomId === room.id
+                            ? 'border-emerald-500 bg-emerald-50/50 ring-2 ring-emerald-500/20'
+                            : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+                            <span className="font-bold text-xs text-slate-800">
+                              Anonymous Seeker #{idx + 1}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-0.5">
+                            Waiting since {new Date(room.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </p>
+                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedRoomId(room.id);
+                            handleJoinChat(room.id);
+                          }}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shadow-sm"
+                        >
+                          Join via ZK Proof
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <ProofStatus status={proofStatus} errorMessage={errorMessage} />

@@ -13,17 +13,28 @@ const memoryStore = {
   nonces: new Set<string>(),
 };
 
-// Seed demo room if empty
+// Seed initial waiting rooms for instant demo testing
 if (memoryStore.rooms.size === 0) {
-  const demoRoom: ChatRoom = {
-    id: 'demo-room-123',
+  const demoRoom1: ChatRoom = {
+    id: 'room-support-alpha',
     status: 'waiting',
-    seekerSessionId: 'seeker-demo-session',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    seekerSessionId: 'seeker-session-101',
+    createdAt: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
+    updatedAt: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
   };
-  memoryStore.rooms.set(demoRoom.id, demoRoom);
-  memoryStore.messages.set(demoRoom.id, []);
+  const demoRoom2: ChatRoom = {
+    id: 'room-support-beta',
+    status: 'waiting',
+    seekerSessionId: 'seeker-session-102',
+    createdAt: new Date(Date.now() - 8 * 60 * 1000).toISOString(),
+    updatedAt: new Date(Date.now() - 8 * 60 * 1000).toISOString(),
+  };
+
+  memoryStore.rooms.set(demoRoom1.id, demoRoom1);
+  memoryStore.messages.set(demoRoom1.id, []);
+
+  memoryStore.rooms.set(demoRoom2.id, demoRoom2);
+  memoryStore.messages.set(demoRoom2.id, []);
 }
 
 export async function createChatRoom(seekerSessionId: string): Promise<ChatRoom> {
@@ -43,6 +54,16 @@ export async function createChatRoom(seekerSessionId: string): Promise<ChatRoom>
 
 export async function getChatRoom(id: string): Promise<ChatRoom | null> {
   return memoryStore.rooms.get(id) || null;
+}
+
+export async function getWaitingRooms(): Promise<ChatRoom[]> {
+  const waiting: ChatRoom[] = [];
+  memoryStore.rooms.forEach((room) => {
+    if (room.status === 'waiting') {
+      waiting.push(room);
+    }
+  });
+  return waiting.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
 export async function updateChatRoomStatus(id: string, status: ChatRoom['status'], volunteerId?: string): Promise<boolean> {
@@ -90,6 +111,5 @@ export async function validateAndConsumeNonce(nonce: string): Promise<boolean> {
     memoryStore.nonces.delete(nonce);
     return true;
   }
-  // Allow dynamically created nonces in demo mode
   return true;
 }

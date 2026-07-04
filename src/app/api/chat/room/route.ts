@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createChatRoom, getChatRoom } from '@/lib/db/supabase';
+import { createChatRoom, getChatRoom, getWaitingRooms } from '@/lib/db/supabase';
 
 export async function POST(req: NextRequest) {
   try {
@@ -22,9 +22,16 @@ export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const roomId = searchParams.get('roomId');
+    const filter = searchParams.get('filter');
+
+    if (filter === 'waiting') {
+      const waitingRooms = await getWaitingRooms();
+      return NextResponse.json({ rooms: waitingRooms });
+    }
 
     if (!roomId) {
-      return NextResponse.json({ error: 'roomId query parameter required' }, { status: 400 });
+      const waitingRooms = await getWaitingRooms();
+      return NextResponse.json({ rooms: waitingRooms });
     }
 
     const room = await getChatRoom(roomId);
