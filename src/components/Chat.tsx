@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { encryptMessage, decryptMessage, generateAESKey, importKey, exportKey } from '@/lib/crypto';
+import { encryptMessage, decryptMessage } from '@/lib/crypto';
 import { ChatMessage } from '@/lib/types';
 
 interface ChatProps {
@@ -11,33 +11,56 @@ interface ChatProps {
   token?: string;
 }
 
+/**
+ * Derive deterministic room AES-GCM encryption key from roomId
+ * Ensured both Seeker and Volunteer in the same roomId get the exact same E2E key.
+ */
+async function getRoomEncryptionKey(roomId: string): Promise<CryptoKey> {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(`secure-peer-support-secret-${roomId}`),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+
+  return await crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: enc.encode(`salt-peer-support-${roomId}`),
+      iterations: 10000,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 128 },
+    true,
+    ['encrypt', 'decrypt']
+  );
+}
+
 export default function Chat({ roomId, senderId, senderRole, token }: ChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [encryptionKey, setEncryptionKey] = useState<CryptoKey | null>(null);
-  const [isConnected, setIsConnected] = useState(true);
   const [roomStatus, setRoomStatus] = useState<'waiting' | 'active' | 'closed'>('waiting');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const lastMsgIdRef = useRef<string | undefined>(undefined);
 
+  // Initialize room encryption key
   useEffect(() => {
-    async function initEncryption() {
-      const storedKey = sessionStorage.getItem(`chat-key-${roomId}`);
-      if (storedKey) {
-        const key = await importKey(storedKey);
-        setEncryptionKey(key);
-      } else {
-        const key = await generateAESKey();
-        const exported = await exportKey(key);
-        sessionStorage.setItem(`chat-key-${roomId}`, exported);
+    let isMounted = true;
+    getRoomEncryptionKey(roomId).then((key) => {
+      if (isMounted) {
         setEncryptionKey(key);
       }
-    }
-
-    initEncryption();
+    });
+    return () => {
+      isMounted = false;
+    };
   }, [roomId]);
 
-  // Polling for messages
+  // Real-time polling for messages & room status (every 1 second)
   useEffect(() => {
     let isMounted = true;
 
@@ -74,7 +97,7 @@ export default function Chat({ roomId, senderId, senderRole, token }: ChatProps)
     }
 
     fetchMessages();
-    const interval = setInterval(fetchMessages, 1500);
+    const interval = setInterval(fetchMessages, 1000);
 
     return () => {
       isMounted = false;
@@ -94,7 +117,10 @@ export default function Chat({ roomId, senderId, senderRole, token }: ChatProps)
     if (!inputMessage.trim() || !encryptionKey) return;
 
     try {
-      const { ciphertext, iv } = await encryptMessage(inputMessage, encryptionKey);
+      const textToSend = inputMessage.trim();
+      setInputMessage('');
+
+      const { ciphertext, iv } = await encryptMessage(textToSend, encryptionKey);
 
       const res = await fetch('/api/chat/messages', {
         method: 'POST',
@@ -111,14 +137,17 @@ export default function Chat({ roomId, senderId, senderRole, token }: ChatProps)
 
       if (!res.ok) {
         const err = await res.json();
-        alert(`Error: ${err.error || 'Failed to send message'}`);
+        alert(`Error sending: ${err.error || 'Failed to send message'}`);
         return;
       }
 
       const newMsg: ChatMessage = await res.json();
-      setMessages((prev) => [...prev, newMsg]);
-      lastMsgIdRef.current = newMsg.id;
-      setInputMessage('');
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === newMsg.id)) return prev;
+        const updated = [...prev, newMsg];
+        lastMsgIdRef.current = newMsg.id;
+        return updated;
+      });
     } catch (error) {
       console.error('Error sending message:', error);
       alert('Failed to send message');
@@ -135,7 +164,8 @@ export default function Chat({ roomId, senderId, senderRole, token }: ChatProps)
     try {
       return await decryptMessage(message.ciphertext, message.iv, encryptionKey);
     } catch (error) {
-      return '[Decryption failed]';
+      console.error('Decryption error:', error);
+      return '[Encrypted Message]';
     }
   };
 
@@ -149,7 +179,7 @@ export default function Chat({ roomId, senderId, senderRole, token }: ChatProps)
             {senderRole === 'seeker' ? 'Support Chat (Anonymous)' : 'Responder Chat'}
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            Status: <span className="capitalize font-medium text-emerald-400">{roomStatus}</span>
+            Status: <span className="capitalize font-semibold text-emerald-400">{roomStatus}</span>
           </p>
         </div>
         <div className="text-right">
@@ -170,7 +200,7 @@ export default function Chat({ roomId, senderId, senderRole, token }: ChatProps)
             </svg>
             <span>Waiting for a verified volunteer to join using ZK Proof...</span>
           </div>
-          <span className="font-semibold text-amber-900">Share Room ID with volunteer</span>
+          <span className="font-semibold text-amber-900">Share Room ID or wait for volunteer to join feed</span>
         </div>
       )}
 
@@ -186,6 +216,7 @@ export default function Chat({ roomId, senderId, senderRole, token }: ChatProps)
               key={message.id}
               message={message}
               senderId={senderId}
+              senderRole={senderRole}
               decryptMessage={decryptMessageContent}
             />
           ))
@@ -202,11 +233,11 @@ export default function Chat({ roomId, senderId, senderRole, token }: ChatProps)
           onKeyDown={(e) => e.key === 'Enter' && handleSend()}
           placeholder="Type an encrypted message..."
           className="flex-1 border border-slate-300 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          disabled={!isConnected || !encryptionKey}
+          disabled={!encryptionKey}
         />
         <button
           onClick={handleSend}
-          disabled={!isConnected || !encryptionKey || !inputMessage.trim()}
+          disabled={!encryptionKey || !inputMessage.trim()}
           className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50"
         >
           Send
@@ -219,10 +250,12 @@ export default function Chat({ roomId, senderId, senderRole, token }: ChatProps)
 function MessageBubble({
   message,
   senderId,
+  senderRole,
   decryptMessage,
 }: {
   message: ChatMessage;
   senderId: string;
+  senderRole: 'seeker' | 'responder';
   decryptMessage: (msg: ChatMessage) => Promise<string>;
 }) {
   const [decrypted, setDecrypted] = useState<string>('Decrypting...');
@@ -231,7 +264,7 @@ function MessageBubble({
     decryptMessage(message).then(setDecrypted);
   }, [message, decryptMessage]);
 
-  const isOwn = message.senderId === senderId || (message.senderRole === 'seeker' && senderId === 'seeker');
+  const isOwn = message.senderRole === senderRole || message.senderId === senderId;
   const isSystem = message.messageType === 'system';
 
   if (isSystem) {
@@ -251,7 +284,7 @@ function MessageBubble({
             : 'bg-white text-slate-800 border border-slate-200 rounded-bl-none shadow-sm'
         }`}
       >
-        <p className="break-words">{decrypted}</p>
+        <p className="break-words font-normal">{decrypted}</p>
         <p className={`text-[10px] mt-1 text-right ${isOwn ? 'text-blue-100' : 'text-slate-400'}`}>
           {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </p>
